@@ -361,8 +361,8 @@ impl<T> Clone for HybridVec<T> {
           handle_alloc_error(Layout::from_size_align_unchecked(source_cap * u16size, u16align));
         }
 
-        self.data_buffer.ptr = Unique::new_unchecked(new_data_ptr.unwrap().as_ptr() as *mut _);
-        self.index_buffer.ptr = Unique::new_unchecked(new_index_ptr.unwrap().as_ptr() as *mut _);
+        self.data_buffer.ptr = Unique::new_unchecked(new_data_ptr.unwrap().as_ptr().cast());
+        self.index_buffer.ptr = Unique::new_unchecked(new_index_ptr.unwrap().as_ptr().cast());
         self.data_buffer.cap = source_cap;
         self.index_buffer.cap = source_cap;
 
@@ -479,7 +479,6 @@ mod tests {
     let mut hv = HybridVec::<i32>::new();
     hv.push(42);
     hv.push(3);
-    let ve = Vec::new();
     let erased = hv.erase(0).unwrap();
     assert_eq!(erased, 42);
 
