@@ -180,7 +180,7 @@ impl<T> HybridVec<T> {
     self.len += 1;
   }
 
-  pub fn insert(&mut self, elem: T, pos: usize) {
+  pub fn insert(&mut self, pos: usize, elem: T) {
     assert!(pos <= self.len, "out of bound");
     self.grow_if_required();
 
