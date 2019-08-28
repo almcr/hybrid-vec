@@ -199,7 +199,7 @@ impl<T> HybridVec<T> {
   }
 
   pub fn erase(&mut self, pos: usize) -> Option<T> {
-    if self.len == 0 {
+    if self.len == 0 || pos >= self.len {
       None
     } else {
       unsafe {
@@ -251,7 +251,7 @@ impl<T> HybridVec<T> {
         data: self.data_buffer.ptr.as_ptr(),
         start_index: self.index_buffer.ptr.as_ptr(),
         end_index: self.index_buffer.ptr.as_ptr().offset(self.len as isize),
-        _marker: PhantomData
+        _marker: PhantomData,
       }
     }
   }
@@ -382,6 +382,7 @@ impl<T> Index<usize> for HybridVec<T> {
   type Output = T;
 
   fn index(&self, index: usize) -> &Self::Output {
+    assert!(index < self.len, "out of bound");
     let elem_index = self.index_buffer.read(index) as usize;
     self.data_buffer.get_ref(elem_index)
   }
@@ -389,6 +390,7 @@ impl<T> Index<usize> for HybridVec<T> {
 
 impl<T> IndexMut<usize> for HybridVec<T> {
   fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+    assert!(index < self.len, "out of bound");
     let elem_index = self.index_buffer.read(index) as usize;
     self.data_buffer.get_mut(elem_index)
   }
@@ -453,6 +455,7 @@ mod tests {
     assert_eq!(hv.get(0), Some(&1));
     assert_eq!(hv.get(1), Some(&2));
     assert_eq!(hv.get(2), Some(&3));
+    assert_eq!(hv.get(8723), None);
   }
 
   #[test]
@@ -472,6 +475,15 @@ mod tests {
     hv.push(3);
     assert_eq!(hv.size(), 2);
     assert_eq!(hv, hvec!(42, 3));
+  }
+
+  #[test]
+  fn insert() {
+    let mut hv = hvec![1, 2, 3];
+    hv.insert(0, 0x2a);
+    hv.insert(4, 0x2a);
+    assert_eq!(hv.size(), 5);
+    assert_eq!(hv, hvec![42, 1, 2, 3, 42]);
   }
 
   #[test]
