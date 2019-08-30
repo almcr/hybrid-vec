@@ -1,5 +1,5 @@
 #![feature(ptr_internals)]
-#![feature(allocator_api)]
+#![feature(allocator_api, alloc_layout_extra)]
 
 use std::{mem, ptr};
 use std::ptr::{Unique, NonNull};
@@ -7,6 +7,7 @@ use std::alloc::{Global, Layout, Alloc, handle_alloc_error};
 use std::cmp::PartialEq;
 use std::ops::{Index, IndexMut};
 use std::marker::PhantomData;
+
 
 /// -----------------------------
 /// base vec type for composition
@@ -21,23 +22,47 @@ impl<T> RawVec<T> {
   ///
   /// init a zero capacity raw vec, no alloc take place.
   ///
-  pub fn new() -> Self {
-    assert_ne!(mem::size_of::<T>(),
-               0,
-               "we are not ready to handle Zero size types");
+  fn new() -> Self {
     RawVec {
       ptr: Unique::empty(),
       cap: 0,
     }
   }
 
+  fn from(s: &[T]) -> Self {
+    unsafe {
+      let layout = Layout::array::<T>(s.len()).unwrap();
+      let ptr = Global.alloc(layout);
+
+      // handle alloc fail
+      if ptr.is_err() {
+        handle_alloc_error(layout);
+      }
+
+      let ptr = ptr.unwrap();
+
+      ptr::copy_nonoverlapping(s.as_ptr(), ptr.as_ptr().cast(), s.len());
+
+      RawVec {
+        ptr: Unique::from(ptr.cast()),
+        cap: s.len(),
+      }
+    }
+  }
+
   fn with_capacity(cap: usize) -> Self {
     unsafe {
-      let ptr = Global
-        .alloc(Layout::from_size_align_unchecked(cap * mem::size_of::<T>(),
-                                                 mem::align_of::<T>())).unwrap();
+      let layout = Layout::array::<T>(cap).unwrap();
+
+      let ptr = Global.alloc(layout);
+
+      // handle alloc fail
+      if ptr.is_err() {
+        handle_alloc_error(layout);
+      }
+
       RawVec {
-        ptr: Unique::new_unchecked(ptr.as_ptr() as *mut _),
+        ptr: Unique::from(ptr.unwrap().cast()),
         cap,
       }
     }
@@ -80,21 +105,18 @@ impl<T> RawVec<T> {
 
   fn grow_cap(&mut self, factor: f32) {
     unsafe {
-      let align = mem::align_of::<T>();
-      let elem_size = mem::size_of::<T>();
-
       let (new_cap, ptr) = if self.cap == 0 {
-        (1, Global.alloc(Layout::from_size_align_unchecked(elem_size, align)))
+        (1, Global.alloc(Layout::array::<T>(1).unwrap()))
       } else {
         let new_cap = (self.cap as f32 * factor) as usize;
         let ptr = Global.realloc(NonNull::new_unchecked(self.ptr.as_ptr()).cast(),
-                                 Layout::from_size_align_unchecked(self.cap * elem_size, align),
+                                 Layout::array::<T>(self.cap).unwrap(),
                                  new_cap * elem_size).unwrap();
         (new_cap, Ok(ptr))
       };
 
       if ptr.is_err() {
-        handle_alloc_error(Layout::from_size_align_unchecked(elem_size * new_cap, align))
+        handle_alloc_error(Layout::array::<T>(new_cap).unwrap())
       }
 
       let ptr = ptr.unwrap();
@@ -107,14 +129,10 @@ impl<T> RawVec<T> {
 
 impl<T> Drop for RawVec<T> {
   fn drop(&mut self) {
-    let elem_size = mem::size_of::<T>();
-    let align = mem::align_of::<T>();
-
     if self.cap != 0 && elem_size != 0 {
       unsafe {
         let nn_ptr: NonNull<T> = self.ptr.into();
-        Global.dealloc(nn_ptr.cast(),
-                       Layout::from_size_align_unchecked(self.cap * elem_size, align));
+        Global.dealloc(nn_ptr.cast(),Layout::array::<T>(self.cap).unwrap());
       }
     }
   }
@@ -145,6 +163,22 @@ impl<T> HybridVec<T> {
 
   pub fn new() -> Self {
     HybridVec { data_buffer: RawVec::new(), index_buffer: RawVec::new(), len: 0 }
+  }
+
+  pub fn from(array: &[T]) -> Self {
+    let data_buffer = RawVec::from(array);
+    // index buffer initialized to incr int sequence
+    let index_buffer = RawVec::with_capacity(array.len());
+
+    for i in 0..array.len() {
+      index_buffer.write(i, i as u16);
+    }
+
+    HybridVec {
+      data_buffer,
+      index_buffer,
+      len: array.len(),
+    }
   }
 
   pub fn with_capacity(n: usize) -> Self {
@@ -218,6 +252,13 @@ impl<T> HybridVec<T> {
 
         Some(self.data_buffer.read(erased_elem_index as usize))
       }
+    }
+  }
+
+  pub fn clear(&mut self) {
+    self.len = 0;
+    for i in 0..self.index_buffer.cap {
+      self.index_buffer.write(i, i as u16);
     }
   }
 
@@ -315,56 +356,49 @@ impl<T> PartialEq for HybridVec<T> where T: PartialEq {
 
     true
   }
-
-  fn ne(&self, other: &Self) -> bool {
-    !self.eq(other)
-  }
 }
 
 impl<T> Clone for HybridVec<T> {
   fn clone(&self) -> Self {
-    let hv_copy = Self::with_capacity(self.len);
+    let cap = self.data_buffer.cap;
+    let mut hv_copy = Self::with_capacity(cap);
     unsafe {
-      let cap = self.data_buffer.cap;
       ptr::copy_nonoverlapping(self.data_buffer.ptr.as_ptr(),
                                hv_copy.data_buffer.ptr.as_ptr(), cap);
       ptr::copy_nonoverlapping(self.index_buffer.ptr.as_ptr(),
                                hv_copy.index_buffer.ptr.as_ptr(), cap);
     }
+    hv_copy.len = self.len;
     hv_copy
   }
 
   fn clone_from(&mut self, source: &Self) {
-    let source_cap = source.data_buffer.cap;
-    let elem_size = mem::size_of::<T>();
-    let align = mem::align_of::<T>();
-    let u16size = mem::size_of::<u16>();
-    let u16align = mem::align_of::<u16>();
+    let src_cap = source.data_buffer.cap;
 
     unsafe {
-      if self.data_buffer.cap < source_cap {
+      if self.data_buffer.cap < src_cap {
         let new_data_ptr = Global.realloc(
           NonNull::<T>::new_unchecked(self.data_buffer.ptr.as_ptr()).cast(),
-          Layout::from_size_align_unchecked(self.data_buffer.cap * elem_size, align),
-          source_cap * elem_size);
+          Layout::array::<T>(self.data_buffer.cap).unwrap(),
+          src_cap * elem_size);
 
         let new_index_ptr = Global.realloc(
           NonNull::<u16>::new_unchecked(self.index_buffer.ptr.as_ptr()).cast(),
-          Layout::from_size_align_unchecked(self.index_buffer.cap * u16size, u16align),
-          source_cap * u16size);
+          Layout::array::<i16>(self.index_buffer.cap).unwrap(),
+          src_cap * u16size);
 
         if new_data_ptr.is_err() {
-          handle_alloc_error(Layout::from_size_align_unchecked(source_cap * elem_size, align));
+          handle_alloc_error(Layout::array::<T>(src_cap).unwrap());
         }
 
         if new_index_ptr.is_err() {
-          handle_alloc_error(Layout::from_size_align_unchecked(source_cap * u16size, u16align));
+          handle_alloc_error(Layout::array::<i16>(src_cap).unwrap());
         }
 
-        self.data_buffer.ptr = Unique::new_unchecked(new_data_ptr.unwrap().as_ptr().cast());
-        self.index_buffer.ptr = Unique::new_unchecked(new_index_ptr.unwrap().as_ptr().cast());
-        self.data_buffer.cap = source_cap;
-        self.index_buffer.cap = source_cap;
+        self.data_buffer.ptr = Unique::from(new_data_ptr);
+        self.index_buffer.ptr = Unique::from(new_index_ptr);
+        self.data_buffer.cap = src_cap;
+        self.index_buffer.cap = src_cap;
 
         ptr::copy_nonoverlapping(source.data_buffer.ptr.as_ptr(),
                                  self.data_buffer.ptr.as_ptr(), source.len);
@@ -406,16 +440,35 @@ macro_rules! hvec {
       hv
     }
   };
+  ($elem:expr; $n:expr) => {
+    [$elem; n].to_vec();
+  };
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use rand::{SeedableRng, Rng};
+  use rand::rngs::SmallRng;
 
   #[test]
   fn create() {
     let empty_hv = HybridVec::<i32>::new();
     assert!(empty_hv.empty());
+  }
+
+  #[test]
+  fn create_from() {
+    let hv = HybridVec::from(&[0; 3]);
+    assert_eq!(hv.size(), 3);
+    assert_eq!(hv[0], 0);
+    assert_eq!(hv[1], 0);
+    assert_eq!(hv[2], 0);
+
+    let hv = HybridVec::from(&[42; 3]);
+    assert_eq!(hv[0], 42);
+    assert_eq!(hv[1], 42);
+    assert_eq!(hv[2], 42);
   }
 
   #[test]
@@ -503,9 +556,30 @@ mod tests {
   }
 
   #[test]
+  fn clone() {
+    let hv = hvec![1, 2, 3, 4];
+
+    let hv_clone = hv.clone();
+
+    assert_eq!(hv, hv_clone);
+  }
+
+  #[test]
+  fn clone_from() {
+    let hv = hvec![1, 2, 3, 4];
+
+    let mut hv_clone = HybridVec::<i32>::new();
+    hv_clone.clone_from(&hv);
+
+    assert_eq!(hv, hv_clone);
+  }
+
+  #[test]
   fn toy() {
-    let ve = vec![1, 2, 3];
-    let mut it = ve.iter().rev();
-    let elem = it.next();
+    let mut rng = SmallRng::seed_from_u64(32);
+
+    for _ in 0..5 {
+      println!("{}", rng.gen_range(0, 4));
+    }
   }
 }
