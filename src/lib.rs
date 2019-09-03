@@ -215,7 +215,7 @@ impl<T> HybridVec<T> {
   }
 
   pub fn insert(&mut self, pos: usize, elem: T) {
-    assert!(pos <= self.len, "out of bound");
+    assert!(pos < self.data_buffer.cap, "out of bound");
     self.grow_if_required();
 
     unsafe {
