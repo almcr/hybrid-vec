@@ -1,12 +1,13 @@
 #![feature(ptr_internals)]
 #![feature(allocator_api, alloc_layout_extra)]
 
-use std::{mem, ptr};
+use std::{mem, ptr, fmt};
 use std::ptr::{Unique, NonNull};
 use std::alloc::{Global, Layout, Alloc, handle_alloc_error};
 use std::cmp::PartialEq;
 use std::ops::{Index, IndexMut};
 use std::marker::PhantomData;
+use std::fmt::Formatter;
 
 
 /// -----------------------------
@@ -111,7 +112,7 @@ impl<T> RawVec<T> {
         let new_cap = (self.cap as f32 * factor) as usize;
         let ptr = Global.realloc(NonNull::new_unchecked(self.ptr.as_ptr()).cast(),
                                  Layout::array::<T>(self.cap).unwrap(),
-                                 new_cap * elem_size).unwrap();
+                                 new_cap).unwrap();
         (new_cap, Ok(ptr))
       };
 
@@ -129,10 +130,10 @@ impl<T> RawVec<T> {
 
 impl<T> Drop for RawVec<T> {
   fn drop(&mut self) {
-    if self.cap != 0 && elem_size != 0 {
+    if self.cap != 0 {
       unsafe {
         let nn_ptr: NonNull<T> = self.ptr.into();
-        Global.dealloc(nn_ptr.cast(),Layout::array::<T>(self.cap).unwrap());
+        Global.dealloc(nn_ptr.cast(), Layout::array::<T>(self.cap).unwrap());
       }
     }
   }
@@ -298,6 +299,12 @@ impl<T> HybridVec<T> {
   }
 }
 
+impl<T> fmt::Display for HybridVec<T> {
+  fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+    write!(f, "hvector size {}", self.len)
+  }
+}
+
 pub struct HIter<'a, T> {
   data: *const T,
   start_index: *const u16,
@@ -374,6 +381,8 @@ impl<T> Clone for HybridVec<T> {
 
   fn clone_from(&mut self, source: &Self) {
     let src_cap = source.data_buffer.cap;
+    let elem_size = mem::size_of::<T>();
+    let u16size = mem::size_of::<T>();
 
     unsafe {
       if self.data_buffer.cap < src_cap {
@@ -395,8 +404,8 @@ impl<T> Clone for HybridVec<T> {
           handle_alloc_error(Layout::array::<i16>(src_cap).unwrap());
         }
 
-        self.data_buffer.ptr = Unique::from(new_data_ptr);
-        self.index_buffer.ptr = Unique::from(new_index_ptr);
+        self.data_buffer.ptr = Unique::from(new_data_ptr.unwrap().cast());
+        self.index_buffer.ptr = Unique::from(new_index_ptr.unwrap().cast());
         self.data_buffer.cap = src_cap;
         self.index_buffer.cap = src_cap;
 

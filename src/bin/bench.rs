@@ -15,9 +15,7 @@ impl<T> Insertable<T> for HybridVec<T> {
     self.insert(pos, elem);
   }
 
-  fn clear(&mut self) {
-    self.clear();
-  }
+  fn clear(&mut self) { self.clear(); }
 }
 
 impl<T> Insertable<T> for Vec<T> {
@@ -25,16 +23,14 @@ impl<T> Insertable<T> for Vec<T> {
     self.insert(pos, elem);
   }
 
-  fn clear(&mut self) {
-    self.clear();
-  }
+  fn clear(&mut self) { self.clear(); }
 }
 
 fn insert_bench<T: Default, I: Insertable<T>>(hv: &mut I, len: usize, iter_n: usize) {
   let mut rng = SmallRng::seed_from_u64(32);
   // generate random indexes
   let mut c = 0;
-  let random_indexes: Vec<usize> = iter::repeat(()).take(len).map(|()| {
+  let random_indexes: Vec<usize> = iter::repeat(()).take(len).map(|_| {
     c += 1;
     rng.gen_range(0, c)
   }).collect();
